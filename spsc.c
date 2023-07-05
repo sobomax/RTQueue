@@ -1,18 +1,20 @@
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CACHE_LINE_SIZE 64 // Common cache line size
 
 typedef struct {
-    _Alignas(CACHE_LINE_SIZE) _Atomic size_t writeIdx;
-    size_t readIdxCache;
-    _Alignas(CACHE_LINE_SIZE) _Atomic size_t readIdx;
-    size_t writeIdxCache;
-    _Alignas(CACHE_LINE_SIZE) char padding[CACHE_LINE_SIZE - sizeof(size_t)]; // Padding to avoid false sharing
     size_t capacity;
+    _Alignas(CACHE_LINE_SIZE) _Atomic size_t writeIdx;
+    _Alignas(CACHE_LINE_SIZE) size_t readIdxCache;
+    _Alignas(CACHE_LINE_SIZE) _Atomic size_t readIdx;
+    _Alignas(CACHE_LINE_SIZE) size_t writeIdxCache;
+    _Alignas(CACHE_LINE_SIZE) char padding[CACHE_LINE_SIZE - sizeof(size_t)]; // Padding to avoid false sharing
     _Alignas(CACHE_LINE_SIZE) void* slots[0]; // FAM for void pointer type slots
 } SPSCQueue;
 
@@ -20,8 +22,8 @@ typedef struct {
 SPSCQueue* create_queue(size_t capacity) {
     SPSCQueue* queue = (SPSCQueue*) aligned_alloc(CACHE_LINE_SIZE, sizeof(SPSCQueue) + sizeof(void*) * capacity);
     queue->capacity = capacity;
-    queue->writeIdx = 0;
-    queue->readIdx = 0;
+    atomic_init(&queue->writeIdx, 0);
+    atomic_init(&queue->readIdx, 0);
     queue->writeIdxCache = 0;
     queue->readIdxCache = 0;
     return queue;
@@ -36,17 +38,19 @@ void destroy_queue(SPSCQueue* queue) {
 // This should be called from a single producer thread.
 bool try_push(SPSCQueue* queue, void* value) {
     size_t writeIdx = atomic_load_explicit(&queue->writeIdx, memory_order_relaxed);
-    size_t nextWriteIdx = (writeIdx + 1) % queue->capacity;
+    size_t nextWriteIdx = writeIdx + 1;
     // If the queue is not full
-    if(nextWriteIdx != queue->readIdxCache) {
-        queue->slots[writeIdx] = value;
+    size_t newsize = nextWriteIdx - queue->readIdxCache;
+    if(newsize <= queue->capacity) {
+        queue->slots[writeIdx % queue->capacity] = value;
         atomic_store_explicit(&queue->writeIdx, nextWriteIdx, memory_order_release);
         return true;
     }
     // Update the cached index and retry
     queue->readIdxCache = atomic_load_explicit(&queue->readIdx, memory_order_acquire);
-    if(nextWriteIdx != queue->readIdxCache) {
-        queue->slots[writeIdx] = value;
+    newsize = nextWriteIdx - queue->readIdxCache;
+    if(newsize <= queue->capacity) {
+        queue->slots[writeIdx % queue->capacity] = value;
         atomic_store_explicit(&queue->writeIdx, nextWriteIdx, memory_order_release);
         return true;
     }
@@ -59,16 +63,16 @@ bool try_push(SPSCQueue* queue, void* value) {
 bool _try_pop(SPSCQueue* queue, void** value) {
     size_t readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
     // If the queue is not empty
-    if(readIdx != queue->writeIdxCache) {
-        *value = queue->slots[readIdx];
-        atomic_store_explicit(&queue->readIdx, (readIdx + 1) % queue->capacity, memory_order_release);
+    if(readIdx < queue->writeIdxCache) {
+        *value = queue->slots[readIdx % queue->capacity];
+        atomic_store_explicit(&queue->readIdx, readIdx + 1, memory_order_release);
         return true;
     }
     // Update the cached index and retry
     queue->writeIdxCache = atomic_load_explicit(&queue->writeIdx, memory_order_acquire);
-    if(readIdx != queue->writeIdxCache) {
-        *value = queue->slots[readIdx];
-        atomic_store_explicit(&queue->readIdx, (readIdx + 1) % queue->capacity, memory_order_release);
+    if(readIdx < queue->writeIdxCache) {
+        *value = queue->slots[readIdx % queue->capacity];
+        atomic_store_explicit(&queue->readIdx, readIdx + 1, memory_order_release);
         return true;
     }
     // Queue was empty
@@ -83,15 +87,15 @@ bool try_pop(SPSCQueue* queue, void** value) {
     do {
         readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
         // If the queue is not empty
-        if(readIdx != queue->writeIdxCache) {
-            rval = queue->slots[readIdx];
-            newReadIdx = (readIdx + 1) % queue->capacity;
+        if(readIdx < queue->writeIdxCache) {
+            rval = queue->slots[readIdx % queue->capacity];
+            newReadIdx = readIdx + 1;
         } else {
             // Update the cached index and retry
             queue->writeIdxCache = atomic_load_explicit(&queue->writeIdx, memory_order_acquire);
-            if(readIdx != queue->writeIdxCache) {
-                rval = queue->slots[readIdx];
-                newReadIdx = (readIdx + 1) % queue->capacity;
+            if(readIdx < queue->writeIdxCache) {
+                rval = queue->slots[readIdx % queue->capacity];
+                newReadIdx = readIdx + 1;
             } else {
                 // Queue was empty
                 return false;
@@ -103,7 +107,39 @@ bool try_pop(SPSCQueue* queue, void** value) {
     return true;
 }
 
-#include <assert.h>
+#define _MIN(a, b) ((a) > (b) ? (b) : (a))
+
+size_t try_pop_many(SPSCQueue* queue, void** values, size_t howmany) {
+    size_t readIdx, newReadIdx;
+    void **rval = alloca(sizeof(*values) * howmany);
+    size_t rnum;
+    do {
+        rnum = 0;
+        readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
+        // If the queue is not empty
+        if(readIdx >= queue->writeIdxCache) {
+            // Update the cached index and retry
+            queue->writeIdxCache = atomic_load_explicit(&queue->writeIdx, memory_order_acquire);
+            if(readIdx == queue->writeIdxCache) {
+                // Queue was empty
+                return 0;
+            }
+            assert(readIdx < queue->writeIdxCache);
+        }
+        newReadIdx = queue->writeIdxCache;
+        size_t i;
+        for (i = readIdx; i != newReadIdx && rnum < howmany; i++) {
+            rval[rnum] = queue->slots[i % queue->capacity];
+            rnum++;
+        }
+        newReadIdx = i;
+    } while(!atomic_compare_exchange_weak_explicit(&queue->readIdx, &readIdx, newReadIdx,
+                                                   memory_order_release, memory_order_relaxed));
+    memcpy(values, rval, rnum * sizeof(*values));
+    return rnum;
+}
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -120,58 +156,83 @@ typedef struct {
     uint64_t chksum;
 } WorkerArgs;
 
+#define QUEUE_SIZE 4096
+#define WRKR_BATCH_SIZE 128
+
 void* worker_thread(void* arg) {
     WorkerArgs* args = (WorkerArgs*) arg;
     SPSCQueue* queue = args->queue;
-    void* value = NULL;
+    void* values[WRKR_BATCH_SIZE] = {};
     uint64_t last_value = 0;
     struct timespec delay = {};
 
     while (1) {
-        if (try_pop(queue, &value)) {
-            if (value == (void*)-1) {
-                break; // Exit the thread when EOF marker is found
+        size_t n = try_pop_many(queue, values, WRKR_BATCH_SIZE);
+        if (n > 0) {
+            for (size_t i = 0; i < n; i++) {
+                if (values[i] == (void*)-1) {
+                    goto out;
+                }
+                uint64_t current_value = (uint64_t)values[i];
+                if (current_value <= last_value) {
+                    printf("Error: Expected value greater than %" PRIu64 " but got %" PRIu64 "\n", last_value, current_value);
+                    abort();
+                    exit(EXIT_FAILURE);
+                }
+                last_value = current_value;
+                args->count += 1;
+                args->chksum += current_value;
             }
-            uint64_t current_value = (uint64_t) value;
-            if (current_value <= last_value) {
-                printf("Error: Expected value greater than %" PRIu64 " but got %" PRIu64 "\n", last_value, current_value);
-                exit(EXIT_FAILURE);
-            }
-            last_value = current_value;
-            args->count += 1;
-            args->chksum += current_value;
         } else {
-            pthread_yield();
+            delay.tv_nsec = 1;
+            nanosleep(&delay, NULL);
+            //pthread_yield();
         }
-        delay.tv_nsec = random() % 10000;
-        nanosleep(&delay, NULL);
+        //delay.tv_nsec = random() % 10000;
+        delay.tv_nsec = 1;
+        //nanosleep(&delay, NULL);
     }
+out:
     return NULL;
 }
 
+#define SEC(x)   ((x)->tv_sec)
+#define NSEC(x)  ((x)->tv_nsec)
+#define timespec2dtime(s) ((double)SEC(s) + \
+  (double)NSEC(s) / 1000000000.0)
+
 int main() {
-    SPSCQueue* queue = create_queue(1024);
+    SPSCQueue* queue = create_queue(QUEUE_SIZE);
     pthread_t worker;
     WorkerArgs args = {.queue = queue};
+    struct timespec st = {}, et = {};
 
     if (pthread_create(&worker, NULL, worker_thread, &args)) {
         fprintf(stderr, "Error creating thread\n");
         return 1;
     }
 
-    time_t start_time = time(NULL);
-    uintptr_t i = 1;
+    clock_gettime(CLOCK_MONOTONIC, &st);
+    double stime = timespec2dtime(&st);
+    double etime = 0;
+    uintptr_t i = 0;
     uintptr_t disc = 0;
     uint64_t chksum = 0;
-    while (time(NULL) < start_time + NUM_SECONDS) {
-        while (!try_push(queue, (void*) i)) {
+    while (etime < stime + NUM_SECONDS) {
+        while (!try_push(queue, (void*) i + 1)) {
+            struct timespec delay = {.tv_nsec = 1};
+            nanosleep(&delay, NULL);
             void *junk;
             if (try_pop(queue, &junk)) {
                 chksum -= (uintptr_t)junk;
                 disc++;
             }
         }
-        chksum += i;
+        chksum += i + 1;
+        if ((((1 << 13) - 1) & i) == 0) {
+            clock_gettime(CLOCK_MONOTONIC, &et);
+            etime = timespec2dtime(&et);
+        }
         i++;
     }
     while (!try_push(queue, (void*)-1)) { pthread_yield(); } // Add EOF marker
@@ -183,7 +244,8 @@ int main() {
     }
 
     assert(chksum == args.chksum);
-    printf("Sent %" PRIu64 ", received %" PRIu64 " messages in %d seconds\n", i - disc, args.count, NUM_SECONDS);
+    printf("Sent %" PRIu64 " + %" PRIu64 ", received %" PRIu64 " messages in %d seconds\n", i - disc, disc, args.count, NUM_SECONDS);
+    printf("PPS is %.3f MPPS, packet loss rate %.4f%%\n", 1e-6 * (double)(i - disc) / (etime - stime), 100.0 * (double)disc / (double)i);
 
     destroy_queue(queue);
     return 0;
