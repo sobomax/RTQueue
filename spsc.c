@@ -166,8 +166,7 @@ void* worker_thread(void* arg) {
     void* values[WRKR_BATCH_SIZE] = {};
     uint64_t last_value = 0;
     struct timespec delay = {};
-    double sleepcycles = 0;
-    double rccoeff = (double)1 / QUEUE_SIZE;
+    int sleepcycles = 0;
 
     while (1) {
         size_t n = try_pop_many(queue, values, WRKR_BATCH_SIZE);
@@ -186,22 +185,15 @@ void* worker_thread(void* arg) {
                 args->count += 1;
                 args->chksum += current_value;
             }
-            sleepcycles = sleepcycles * (1.0 - rccoeff);
+            sleepcycles = sleepcycles * (QUEUE_SIZE - n) / QUEUE_SIZE;
         } else {
-            sleepcycles += rccoeff;
+            sleepcycles += 1;
         }
-            //volatile int dummy = 0;
 
-           //sleepcycles += rccoeff;
+        for(volatile size_t i = 0; i < sleepcycles / QUEUE_SIZE; i++) {
+            continue;
+        }
 
-            for(volatile size_t i = 0; i < (size_t)sleepcycles; i++) {
-                //dummy++;  // Without this operation, the loop might be optimized away
-                continue;
-            }
-            delay.tv_nsec = 1;
-            //nanosleep(&delay, NULL);
-            //pthread_yield();
-        //}
         //delay.tv_nsec = random() % 100;
         //delay.tv_nsec = 1;
         //nanosleep(&delay, NULL);
