@@ -8,13 +8,15 @@
 
 #define CACHE_LINE_SIZE 64 // Common cache line size
 
+#define QUEUE_SIZE 4096
+#define WRKR_BATCH_SIZE 16
+
 typedef struct {
     size_t capacity;
-    _Alignas(CACHE_LINE_SIZE) _Atomic size_t writeIdx;
-    _Alignas(CACHE_LINE_SIZE) size_t readIdxCache;
-    _Alignas(CACHE_LINE_SIZE) _Atomic size_t readIdx;
-    _Alignas(CACHE_LINE_SIZE) size_t writeIdxCache;
-    _Alignas(CACHE_LINE_SIZE) char padding[CACHE_LINE_SIZE - sizeof(size_t)]; // Padding to avoid false sharing
+    _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t writeIdx;
+    _Alignas(CACHE_LINE_SIZE) uint64_t readIdxCache;
+    _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t readIdx;
+    _Alignas(CACHE_LINE_SIZE) uint64_t writeIdxCache;
     _Alignas(CACHE_LINE_SIZE) void* slots[0]; // FAM for void pointer type slots
 } SPSCQueue;
 
@@ -37,10 +39,10 @@ void destroy_queue(SPSCQueue* queue) {
 // Function to push an element into the queue.
 // This should be called from a single producer thread.
 bool try_push(SPSCQueue* queue, void* value) {
-    size_t writeIdx = atomic_load_explicit(&queue->writeIdx, memory_order_relaxed);
-    size_t nextWriteIdx = writeIdx + 1;
+    uint64_t writeIdx = atomic_load_explicit(&queue->writeIdx, memory_order_relaxed);
+    uint64_t nextWriteIdx = writeIdx + 1;
     // If the queue is not full
-    size_t newsize = nextWriteIdx - queue->readIdxCache;
+    uint64_t newsize = nextWriteIdx - queue->readIdxCache;
     if(newsize <= queue->capacity) {
         queue->slots[writeIdx % queue->capacity] = value;
         atomic_store_explicit(&queue->writeIdx, nextWriteIdx, memory_order_release);
@@ -61,7 +63,7 @@ bool try_push(SPSCQueue* queue, void* value) {
 // Function to pop an element from the queue.
 // This should be called from a single consumer thread.
 bool _try_pop(SPSCQueue* queue, void** value) {
-    size_t readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
+    uint64_t readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
     // If the queue is not empty
     if(readIdx < queue->writeIdxCache) {
         *value = queue->slots[readIdx % queue->capacity];
@@ -82,7 +84,7 @@ bool _try_pop(SPSCQueue* queue, void** value) {
 // Function to pop an element from the queue.
 // This can be called from multiple consumer threads.
 bool try_pop(SPSCQueue* queue, void** value) {
-    size_t readIdx, newReadIdx;
+    uint64_t readIdx, newReadIdx;
     void *rval;
     do {
         readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
@@ -109,8 +111,10 @@ bool try_pop(SPSCQueue* queue, void** value) {
 
 #define _MIN(a, b) ((a) > (b) ? (b) : (a))
 
+#include <pthread.h>
+
 size_t try_pop_many(SPSCQueue* queue, void** values, size_t howmany) {
-    size_t readIdx, newReadIdx;
+    uint64_t readIdx, newReadIdx;
     void **rval = alloca(sizeof(*values) * howmany);
     size_t rnum;
     do {
@@ -127,14 +131,14 @@ size_t try_pop_many(SPSCQueue* queue, void** values, size_t howmany) {
             assert(readIdx < queue->writeIdxCache);
         }
         newReadIdx = queue->writeIdxCache;
-        size_t i;
+        uint64_t i;
         for (i = readIdx; i != newReadIdx && rnum < howmany; i++) {
             rval[rnum] = queue->slots[i % queue->capacity];
             rnum++;
         }
         newReadIdx = i;
     } while(!atomic_compare_exchange_weak_explicit(&queue->readIdx, &readIdx, newReadIdx,
-                                                   memory_order_release, memory_order_relaxed));
+      memory_order_release, memory_order_relaxed));
     memcpy(values, rval, rnum * sizeof(*values));
     return rnum;
 }
@@ -156,15 +160,14 @@ typedef struct {
     uint64_t chksum;
 } WorkerArgs;
 
-#define QUEUE_SIZE 4096
-#define WRKR_BATCH_SIZE 128
-
 void* worker_thread(void* arg) {
     WorkerArgs* args = (WorkerArgs*) arg;
     SPSCQueue* queue = args->queue;
     void* values[WRKR_BATCH_SIZE] = {};
     uint64_t last_value = 0;
     struct timespec delay = {};
+    double sleepcycles = 0;
+    double rccoeff = (double)1 / QUEUE_SIZE;
 
     while (1) {
         size_t n = try_pop_many(queue, values, WRKR_BATCH_SIZE);
@@ -183,13 +186,24 @@ void* worker_thread(void* arg) {
                 args->count += 1;
                 args->chksum += current_value;
             }
+            sleepcycles = sleepcycles * (1.0 - rccoeff);
         } else {
-            delay.tv_nsec = 1;
-            nanosleep(&delay, NULL);
-            //pthread_yield();
+            sleepcycles += rccoeff;
         }
-        //delay.tv_nsec = random() % 10000;
-        delay.tv_nsec = 1;
+            //volatile int dummy = 0;
+
+           //sleepcycles += rccoeff;
+
+            for(volatile size_t i = 0; i < (size_t)sleepcycles; i++) {
+                //dummy++;  // Without this operation, the loop might be optimized away
+                continue;
+            }
+            delay.tv_nsec = 1;
+            //nanosleep(&delay, NULL);
+            //pthread_yield();
+        //}
+        //delay.tv_nsec = random() % 100;
+        //delay.tv_nsec = 1;
         //nanosleep(&delay, NULL);
     }
 out:
