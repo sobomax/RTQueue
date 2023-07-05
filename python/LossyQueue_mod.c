@@ -3,6 +3,23 @@
 #include <Python.h>
 #include "../SPSCQueue.h"
 
+#define MODULE_BASENAME LossyQueue
+
+#define CONCATENATE_DETAIL(x, y) x##y
+#define CONCATENATE(x, y) CONCATENATE_DETAIL(x, y)
+
+#if !defined(DEBUG_MOD)
+#define MODULE_NAME MODULE_BASENAME
+#else
+#define MODULE_NAME CONCATENATE(MODULE_BASENAME, _debug)
+#endif
+
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
+#define MODULE_NAME_STR TOSTRING(MODULE_NAME)
+#define PY_INIT_FUNC CONCATENATE(PyInit_, MODULE_NAME)
+
 typedef struct {
     PyObject_HEAD
     SPSCQueue* queue;
@@ -13,6 +30,12 @@ static int PyLossyQueue_init(PyLossyQueue* self, PyObject* args, PyObject* kwds)
     static char *kwlist[] = {"size", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "i", kwlist, &size)) {
+        return -1;
+    }
+
+    // Check if size is a power of two
+    if (size <= 0 || (size & (size - 1)) != 0) {
+        PyErr_SetString(PyExc_ValueError, "Queue size must be a power of two");
         return -1;
     }
 
@@ -28,10 +51,12 @@ static int PyLossyQueue_init(PyLossyQueue* self, PyObject* args, PyObject* kwds)
 // The __del__ method for PyLossyQueue objects
 static void PyLossyQueue_dealloc(PyLossyQueue* self) {
     PyObject* item;
-    while (try_pop(self->queue, (void **)&item)) {
-        Py_DECREF(item);
+    if (self->queue != NULL) {
+        while (try_pop(self->queue, (void **)&item)) {
+            Py_DECREF(item);
+        }
+        destroy_queue(self->queue);  // replace with actual queue destruction function
     }
-    destroy_queue(self->queue);  // replace with actual queue destruction function
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -71,7 +96,7 @@ static PyMethodDef PyLossyQueue_methods[] = {
 
 static PyTypeObject PyLossyQueueType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "LossyQueue.LossyQueue",
+    .tp_name = MODULE_NAME_STR "." MODULE_NAME_STR,
     .tp_doc = "Single producer single consumer queue",
     .tp_basicsize = sizeof(PyLossyQueue),
     .tp_itemsize = 0,
@@ -84,13 +109,13 @@ static PyTypeObject PyLossyQueueType = {
 
 static struct PyModuleDef LossyQueue_module = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "LossyQueue",
+    .m_name = MODULE_NAME_STR,
     .m_doc = "Python interface for a lock-free Single Producer Single Consumer (SPSC) queue.",
     .m_size = -1,
 };
 
 // Module initialization function
-PyMODINIT_FUNC PyInit_LossyQueue(void) {
+PyMODINIT_FUNC PY_INIT_FUNC(void) {
     PyObject* module;
     if (PyType_Ready(&PyLossyQueueType) < 0)
         return NULL;
@@ -100,7 +125,7 @@ PyMODINIT_FUNC PyInit_LossyQueue(void) {
         return NULL;
 
     Py_INCREF(&PyLossyQueueType);
-    PyModule_AddObject(module, "LossyQueue", (PyObject*)&PyLossyQueueType);
+    PyModule_AddObject(module, MODULE_NAME_STR, (PyObject*)&PyLossyQueueType);
 
     return module;
 }
