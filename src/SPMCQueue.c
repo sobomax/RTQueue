@@ -5,11 +5,11 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-#include "SPSCQueue.h"
+#include "SPMCQueue.h"
 
 #define CACHE_LINE_SIZE 64 // Common cache line size
 
-struct SPSCQueue {
+struct SPMCQueue {
     size_t capacity;
     uint64_t mask;
     _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t writeIdx;
@@ -20,10 +20,10 @@ struct SPSCQueue {
 };
 
 // Function to create a new queue
-SPSCQueue *
+SPMCQueue *
 create_queue(size_t capacity)
 {
-    SPSCQueue* queue = (SPSCQueue*) aligned_alloc(CACHE_LINE_SIZE, sizeof(SPSCQueue) + sizeof(void*) * capacity);
+    SPMCQueue* queue = (SPMCQueue*) aligned_alloc(CACHE_LINE_SIZE, sizeof(SPMCQueue) + sizeof(void*) * capacity);
     if (queue == NULL) {
         return NULL;
     }
@@ -37,14 +37,14 @@ create_queue(size_t capacity)
 }
 
 // Function to destroy a queue
-void destroy_queue(SPSCQueue* queue) {
+void destroy_queue(SPMCQueue* queue) {
     free(queue);
 }
 
 // Function to push an element into the queue.
 // This should be called from a single producer thread.
 bool
-try_push(SPSCQueue* queue, void* value)
+try_push(SPMCQueue* queue, void* value)
 {
     uint64_t writeIdx = atomic_load_explicit(&queue->writeIdx, memory_order_relaxed);
     uint64_t nextWriteIdx = writeIdx + 1;
@@ -70,7 +70,7 @@ try_push(SPSCQueue* queue, void* value)
 // Function to pop an element from the queue.
 // This can be called from multiple consumer threads.
 bool
-try_pop(SPSCQueue* queue, void** value)
+try_pop(SPMCQueue* queue, void** value)
 {
     uint64_t readIdx, newReadIdx;
     void *rval;
@@ -98,7 +98,7 @@ try_pop(SPSCQueue* queue, void** value)
 }
 
 size_t
-try_pop_many(SPSCQueue* queue, void** values, size_t howmany)
+try_pop_many(SPMCQueue* queue, void** values, size_t howmany)
 {
     uint64_t readIdx, newReadIdx;
 

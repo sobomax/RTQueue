@@ -8,14 +8,14 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-#include "SPSCQueue.h"
+#include "SPMCQueue.h"
 
 #define NUM_SECONDS 10
 #define QUEUE_SIZE 4096
 #define WRKR_BATCH_SIZE 8
 
 typedef struct {
-    SPSCQueue* queue;
+    SPMCQueue* queue;
     uint64_t count;
     uint64_t chksum;
 } WorkerArgs;
@@ -25,7 +25,7 @@ typedef struct {
 
 void* worker_thread(void* arg) {
     WorkerArgs* args = (WorkerArgs*) arg;
-    SPSCQueue* queue = args->queue;
+    SPMCQueue* queue = args->queue;
     void* values[WRKR_BATCH_SIZE] = {};
     uint64_t last_value = 0;
     struct timespec delay = {};
@@ -71,7 +71,7 @@ out:
   (double)NSEC(s) / 1000000000.0)
 
 int main() {
-    SPSCQueue* queue = create_queue(QUEUE_SIZE);
+    SPMCQueue* queue = create_queue(QUEUE_SIZE);
     pthread_t worker;
     WorkerArgs args = {.queue = queue};
     struct timespec st = {}, et = {};

@@ -1,7 +1,7 @@
 #include <stdbool.h>
 
 #include <Python.h>
-#include "../SPSCQueue.h"
+#include "SPMCQueue.h"
 
 #define MODULE_BASENAME LossyQueue
 
@@ -22,7 +22,7 @@
 
 typedef struct {
     PyObject_HEAD
-    SPSCQueue* queue;
+    SPMCQueue* queue;
 } PyLossyQueue;
 
 static int PyLossyQueue_init(PyLossyQueue* self, PyObject* args, PyObject* kwds) {
