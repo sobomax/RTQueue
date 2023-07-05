@@ -10,11 +10,13 @@ mod_name_dbg = mod_name + '_debug'
 mod_dir = dirname(realpath(sys_argv[0]))
 src_dir = '../src/'
 
-compile_args = [f'-I{src_dir}',]
+compile_args = [f'-I{src_dir}', '-flto']
+link_args = ['-flto', '-Wl,--version-script=symbols.map']
 debug_cflags = ['-g3', '-O0', '-DDEBUG_MOD']
 mod_common_args = {
     'sources': ['LossyQueue_mod.c', src_dir + 'SPMCQueue.c'],
-    'extra_compile_args': compile_args
+    'extra_compile_args': compile_args,
+    'extra_link_args': link_args
 }
 mod_debug_args = mod_common_args.copy()
 mod_debug_args['extra_compile_args'] = mod_debug_args['extra_compile_args'] + debug_cflags
