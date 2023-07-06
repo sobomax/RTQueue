@@ -59,6 +59,7 @@ void* worker_thread(void* arg) {
         }
 
         for (volatile size_t i = 0; unlikely(i < (sleepcycles / QUEUE_SIZE)); i++) {
+            asm volatile ("pause");
             continue;
         }
 
