@@ -10,6 +10,10 @@
 
 #include "SPMCQueue.h"
 
+#if !defined(CACHE_LINE_SIZE)
+#define CACHE_LINE_SIZE 64 // Common cache line size
+#endif
+
 #define NUM_SECONDS 10
 #define QUEUE_SIZE 4096
 #define WRKR_BATCH_SIZE 8
@@ -26,7 +30,7 @@ typedef struct {
 void* worker_thread(void* arg) {
     WorkerArgs* args = (WorkerArgs*) arg;
     SPMCQueue* queue = args->queue;
-    void* values[WRKR_BATCH_SIZE] = {};
+    _Alignas(CACHE_LINE_SIZE) void* values[WRKR_BATCH_SIZE] = {};
     uint64_t last_value = 0;
     struct timespec delay = {};
     int sleepcycles = 0;
@@ -85,7 +89,7 @@ int main() {
     double stime = timespec2dtime(&st) + NUM_SECONDS;
     double etime = 0;
     uintptr_t i = 0;
-    uintptr_t disc = 0;
+    uint64_t disc = 0;
     uint64_t chksum = 0;
     for (;;) {
         while (unlikely(!try_push(queue, (void*) i + 1))) {
