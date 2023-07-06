@@ -7,15 +7,19 @@
 
 #include "SPMCQueue.h"
 
+#if !defined(CACHE_LINE_SIZE)
 #define CACHE_LINE_SIZE 64 // Common cache line size
+#endif
+
+#define RESERVED_BITS 4
 
 struct SPMCQueue {
     size_t capacity;
     uint64_t mask;
     _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t writeIdx;
-    _Alignas(CACHE_LINE_SIZE) uint64_t readIdxCache;
+    _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t readIdxCache;
     _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t readIdx;
-    _Alignas(CACHE_LINE_SIZE) uint64_t writeIdxCache;
+    _Alignas(CACHE_LINE_SIZE) _Atomic uint64_t writeIdxCache;
     _Alignas(CACHE_LINE_SIZE) void* slots[0]; // FAM for void pointer type slots
 };
 
@@ -31,8 +35,8 @@ create_queue(size_t capacity)
     queue->mask = capacity - 1;
     atomic_init(&queue->writeIdx, 0);
     atomic_init(&queue->readIdx, 0);
-    queue->writeIdxCache = 0;
-    queue->readIdxCache = 0;
+    atomic_init(&queue->writeIdxCache, 0);
+    atomic_init(&queue->readIdxCache, 0);
     return queue;
 }
 
@@ -41,26 +45,47 @@ void destroy_queue(SPMCQueue* queue) {
     free(queue);
 }
 
+#define LOAD_R_IDX(q, mo) \
+    (atomic_load_explicit(&(q)->readIdx,             (mo)))
+#define LOAD_W_IDX(q, mo) \
+    (atomic_load_explicit(&(q)->writeIdx,            (mo)))
+#define LOAD_R_CACHE(q)   \
+    (atomic_load_explicit(&(q)->readIdxCache,        memory_order_relaxed))
+#define LOAD_W_CACHE(q)   \
+    (atomic_load_explicit(&(q)->writeIdxCache,       memory_order_relaxed))
+#define UPDATE_R_IDX(q, ov, nv) \
+    (atomic_compare_exchange_weak_explicit(&(q)->readIdx, &(ov), (nv), \
+                                                     memory_order_release, \
+                                                     memory_order_relaxed))
+#define UPDATE_W_IDX(q, v) \
+    (atomic_store_explicit(&(q)->writeIdx,      (v), memory_order_release))
+#define UPDATE_R_CACHE(q, v) \
+    (atomic_store_explicit(&(q)->readIdxCache,  (v), memory_order_relaxed))
+#define UPDATE_W_CACHE(q, v) \
+    (atomic_store_explicit(&(q)->writeIdxCache, (v), memory_order_relaxed))
+
 // Function to push an element into the queue.
 // This should be called from a single producer thread.
 bool
 try_push(SPMCQueue* queue, void* value)
 {
-    uint64_t writeIdx = atomic_load_explicit(&queue->writeIdx, memory_order_relaxed);
+    uint64_t writeIdx = LOAD_W_IDX(queue, memory_order_relaxed);
     uint64_t nextWriteIdx = writeIdx + 1;
     // If the queue is not full
-    uint64_t newsize = nextWriteIdx - queue->readIdxCache;
+    uint64_t readIdxCache = LOAD_R_CACHE(queue);
+    uint64_t newsize = nextWriteIdx - readIdxCache;
     if(newsize <= queue->capacity) {
         queue->slots[writeIdx & queue->mask] = value;
-        atomic_store_explicit(&queue->writeIdx, nextWriteIdx, memory_order_release);
+        UPDATE_W_IDX(queue, nextWriteIdx);
         return true;
     }
     // Update the cached index and retry
-    queue->readIdxCache = atomic_load_explicit(&queue->readIdx, memory_order_acquire);
-    newsize = nextWriteIdx - queue->readIdxCache;
+    readIdxCache = LOAD_R_IDX(queue, memory_order_acquire);
+    UPDATE_R_CACHE(queue, readIdxCache);
+    newsize = nextWriteIdx - readIdxCache;
     if(newsize <= queue->capacity) {
         queue->slots[writeIdx & queue->mask] = value;
-        atomic_store_explicit(&queue->writeIdx, nextWriteIdx, memory_order_release);
+        UPDATE_W_IDX(queue, nextWriteIdx);
         return true;
     }
     // Queue was full
@@ -75,24 +100,22 @@ try_pop(SPMCQueue* queue, void** value)
     uint64_t readIdx, newReadIdx;
     void *rval;
     do {
-        readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
+        readIdx = LOAD_R_IDX(queue, memory_order_relaxed);
         // If the queue is not empty
-        if (readIdx < queue->writeIdxCache) {
-            rval = queue->slots[readIdx & queue->mask];
-            newReadIdx = readIdx + 1;
-        } else {
+        uint64_t writeIdxCache = LOAD_W_CACHE(queue);
+        if (readIdx >= writeIdxCache) {
             // Update the cached index and retry
-            queue->writeIdxCache = atomic_load_explicit(&queue->writeIdx, memory_order_acquire);
-            if(readIdx < queue->writeIdxCache) {
-                rval = queue->slots[readIdx & queue->mask];
-                newReadIdx = readIdx + 1;
-            } else {
+            writeIdxCache = LOAD_W_IDX(queue, memory_order_acquire);
+            UPDATE_W_CACHE(queue, writeIdxCache);
+            if(readIdx == writeIdxCache) {
                 // Queue was empty
-                return false;
+                return 0;
             }
+            assert(readIdx < writeIdxCache);
         }
-    } while(!atomic_compare_exchange_weak_explicit(&queue->readIdx, &readIdx, newReadIdx,
-                                                   memory_order_release, memory_order_relaxed));
+        newReadIdx = readIdx + 1;
+        rval  = queue->slots[readIdx & queue->mask];
+    } while (!UPDATE_R_IDX(queue, readIdx, newReadIdx));
     *value = rval;
     return true;
 }
@@ -103,25 +126,25 @@ try_pop_many(SPMCQueue* queue, void** values, size_t howmany)
     uint64_t readIdx, newReadIdx;
 
     do {
-        readIdx = atomic_load_explicit(&queue->readIdx, memory_order_relaxed);
+        readIdx = LOAD_R_IDX(queue, memory_order_relaxed);
         // If the queue is not empty
-        if (readIdx >= queue->writeIdxCache) {
+        uint64_t writeIdxCache = LOAD_W_CACHE(queue);
+        if (readIdx >= writeIdxCache) {
             // Update the cached index and retry
-            queue->writeIdxCache = atomic_load_explicit(&queue->writeIdx, memory_order_acquire);
-            if(readIdx == queue->writeIdxCache) {
+            writeIdxCache = LOAD_W_IDX(queue, memory_order_acquire);
+            UPDATE_W_CACHE(queue, writeIdxCache);
+            if(readIdx == writeIdxCache) {
                 // Queue was empty
                 return 0;
             }
-            assert(readIdx < queue->writeIdxCache);
+            assert(readIdx < writeIdxCache);
         }
-        //newReadIdx = (readIdx + howmany > queue->writeIdxCache) ? queue->writeIdxCache : readIdx + howmany;
         newReadIdx = readIdx + howmany;
-        if (newReadIdx > queue->writeIdxCache)
-            newReadIdx = queue->writeIdxCache;
+        if (newReadIdx > writeIdxCache)
+            newReadIdx = writeIdxCache;
         for (uint64_t i = readIdx; i < newReadIdx; i++) {
             values[i - readIdx] = queue->slots[i & queue->mask];
         }
-    } while(!atomic_compare_exchange_weak_explicit(&queue->readIdx, &readIdx, newReadIdx,
-      memory_order_release, memory_order_relaxed));
+    } while (!UPDATE_R_IDX(queue, readIdx, newReadIdx));
     return (newReadIdx - readIdx);
 }
