@@ -17,7 +17,9 @@
 #define NUM_SECONDS 10
 #define QUEUE_SIZE 4096
 #define WRKR_BATCH_SIZE 8
-#define EOF_SENTINEL ((uintptr_t)-1)
+
+/* End Of Work sentinel */
+#define EOW_SENTINEL ((uintptr_t)-1)
 
 typedef struct {
     SPMCQueue* queue;
@@ -40,11 +42,11 @@ void* worker_thread(void* arg) {
         size_t n = try_pop_many(queue, values, WRKR_BATCH_SIZE);
         if (likely(n > 0)) {
             for (size_t i = 0; i < n; i++) {
-                if (unlikely(values[i] == EOF_SENTINEL)) {
+                uintptr_t current_value = (uintptr_t)values[i];
+                if (unlikely(current_value == EOW_SENTINEL)) {
                     goto out;
                 }
-                uintptr_t current_value = (uintptr_t)values[i];
-                if (unlikely(current_value <= last_value && !(last_value + 1 == EOF_SENTINEL && current_value == EOF_SENTINEL + 1))) {
+                if (unlikely(current_value <= last_value && !(last_value + 1 == EOW_SENTINEL && current_value == EOW_SENTINEL + 1))) {
                     printf("Error: Expected value greater than %" PRIuPTR " but got %" PRIuPTR "\n", last_value, current_value);
                     abort();
                     exit(EXIT_FAILURE);
@@ -111,7 +113,7 @@ int main(int argc, char *argv[]) {
     uint64_t disc = 0;
     uint64_t chksum = 0;
     for (i = 1;;i++) {
-        if (sizeof(uintptr_t) < 8 && unlikely(((uintptr_t)i) == EOF_SENTINEL))
+        if (sizeof(uintptr_t) < 8 && unlikely(((uintptr_t)i) == EOW_SENTINEL))
             i++;
         while (unlikely(!try_push(queue, (void*) i))) {
             struct timespec delay = {.tv_nsec = 1};
@@ -130,7 +132,8 @@ int main(int argc, char *argv[]) {
                 break;
         }
     }
-    while (!try_push(queue, (void *)EOF_SENTINEL)) { pthread_yield(); } // Add EOF marker
+
+    while (!try_push(queue, (void *)EOW_SENTINEL)) { pthread_yield(); } // Add EOW marker
 
     // Wait for the worker thread to exit
     if (pthread_join(worker, NULL)) {
