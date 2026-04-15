@@ -20,17 +20,19 @@ include_dirs = [path_join(mod_dir, src_dir)]
 
 compile_args = []
 link_args = []
-if sys.platform.startswith('linux'):
-    compile_args = ['-flto']
+if sys.platform.startswith('linux') or sys.platform.startswith('freebsd'):
+    compile_args = ['-flto', '-fvisibility=hidden']
     version_script = path_join(mod_dir, 'python', 'symbols.map')
     link_args = ['-flto', f'-Wl,--version-script={version_script}']
     debug_cflags = ['-g3', '-O0', '-DDEBUG_MOD']
 elif sys.platform == 'darwin':
+    compile_args = ['-fvisibility=hidden']
     debug_cflags = ['-g', '-O0', '-DDEBUG_MOD']
 elif sys.platform == 'win32':
     compile_args = ['/std:c11', '/experimental:c11atomics', '/D_CRT_USE_C11_ATOMICS']
     debug_cflags = ['/Zi', '/Od', '/DDEBUG_MOD']
 else:
+    compile_args = ['-fvisibility=hidden']
     debug_cflags = ['-g', '-O0', '-DDEBUG_MOD']
 
 mod_common_args = {
