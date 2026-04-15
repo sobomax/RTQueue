@@ -102,6 +102,25 @@ jobs:
         ./build/spmc_bench_test
       shell: bash
 
+  benchmark_pgo_c:
+    name: 'Benchmark: C API PGO'
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install benchmark toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm
+      shell: bash
+
+    - name: Benchmark baseline vs PGO
+      env:
+        BENCH_SECONDS: 5
+      run: scripts/build/benchmark_pgo.sh
+      shell: bash
+
   build_wheels:
     name: Build Python Wheels
     permissions:
