@@ -51,7 +51,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setup (name = 'RTQueue',
-       version = '1.0',
+       version = '1.1',
        description = 'This is a package for LossyQueue module',
        ext_modules = [module1, module2],
        cmdclass={'test': PyTestCommand} if PyTestCommand else {},
