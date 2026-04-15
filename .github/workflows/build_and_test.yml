@@ -81,11 +81,32 @@ jobs:
       run: python -m pytest -q python/test_lossyqueue.py
       shell: bash
 
+  build_test_c:
+    name: 'Build&Test: C API'
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Configure CMake
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      shell: bash
+
+    - name: Build
+      run: cmake --build build --config Debug --parallel
+      shell: bash
+
+    - name: Test
+      run: |
+        ctest --test-dir build --build-config Debug --output-on-failure
+        ./build/spmc_bench_test
+      shell: bash
+
   build_wheels:
     name: Build Python Wheels
     permissions:
       packages: write
-    needs: build_test_python
+    needs: [build_test_python, build_test_c]
     uses: sippy/cimagic/.github/workflows/BuildPythonWheels.yml@v2
     with:
       ghcr_repo: ${{ github.repository_owner }}/rtqueue
