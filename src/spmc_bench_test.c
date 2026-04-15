@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <sched.h>
 #include <unistd.h>
 #include <time.h>
 #include <stdint.h>
@@ -133,7 +134,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    while (!try_push(queue, (void *)EOW_SENTINEL)) { pthread_yield(); } // Add EOW marker
+    while (!try_push(queue, (void *)EOW_SENTINEL)) { sched_yield(); } // Add EOW marker
 
     // Wait for the worker thread to exit
     if (pthread_join(worker, NULL)) {

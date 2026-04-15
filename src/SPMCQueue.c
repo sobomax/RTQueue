@@ -39,14 +39,12 @@ spmc_aligned_alloc(size_t alignment, size_t size)
     size_t alloc_size = round_up_size(size, alignment);
 #if defined(_WIN32)
     return _aligned_malloc(alloc_size, alignment);
-#elif defined(__APPLE__)
+#else
     void *ptr = NULL;
     if (posix_memalign(&ptr, alignment, alloc_size) != 0) {
         return NULL;
     }
     return ptr;
-#else
-    return aligned_alloc(alignment, alloc_size);
 #endif
 }
 
