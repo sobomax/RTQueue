@@ -15,6 +15,24 @@
 #define CACHE_LINE_SIZE 64 // Common cache line size
 #endif
 
+#if defined(NDEBUG)
+# if defined(_MSC_VER)
+#  define SPMC_ASSERT(expr) __assume(expr)
+# elif defined(__clang__)
+#  if __has_builtin(__builtin_assume)
+#   define SPMC_ASSERT(expr) __builtin_assume(expr)
+#  else
+#   define SPMC_ASSERT(expr) do { if (!(expr)) __builtin_unreachable(); } while (0)
+#  endif
+# elif defined(__GNUC__)
+#  define SPMC_ASSERT(expr) do { if (!(expr)) __builtin_unreachable(); } while (0)
+# else
+#  define SPMC_ASSERT(expr) ((void)0)
+# endif
+#else
+# define SPMC_ASSERT(expr) assert(expr)
+#endif
+
 #define RESERVED_BITS 4
 
 struct SPMCQueue {
@@ -177,7 +195,7 @@ try_pop(SPMCQueue* queue, void** value)
                 // Queue was empty
                 return 0;
             }
-            assert(readIdx < writeIdxCache);
+            SPMC_ASSERT(readIdx < writeIdxCache);
         }
         newReadIdx = readIdx + 1;
         rval  = queue->slots[readIdx & queue->mask];
@@ -203,7 +221,7 @@ try_pop_many(SPMCQueue* queue, void** values, size_t howmany)
                 // Queue was empty
                 return 0;
             }
-            assert(readIdx < writeIdxCache);
+            SPMC_ASSERT(readIdx < writeIdxCache);
         }
         newReadIdx = readIdx + howmany;
         if (newReadIdx > writeIdxCache)

@@ -142,6 +142,9 @@ int main(int argc, char *argv[]) {
     }
 
     assert(chksum == args.chksum);
+#if defined(NDEBUG)
+    (void)chksum;
+#endif
     double ttime = etime - stime + num_seconds;
     i--;
     printf("Sent %" PRIu64 " + %" PRIu64 ", received %" PRIu64 " messages in %.5f seconds\n", i - disc, disc, args.count, ttime);

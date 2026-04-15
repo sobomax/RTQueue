@@ -29,6 +29,7 @@ COMMON_FLAGS=(
   -O3
   -march=native
   -Wall
+  -DNDEBUG
 )
 LINK_FLAGS=(
   -lpthread
