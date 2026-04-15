@@ -14,9 +14,12 @@ enable_testing()
 
 # Create a test executable
 add_executable(spmc_bench_test src/spmc_bench_test.c)
+add_executable(spmc_queue_test src/spmc_queue_test.c)
 
 # Link the test executable against our library and pthread
 target_link_libraries(spmc_bench_test SPMCQueue pthread)
+target_link_libraries(spmc_queue_test SPMCQueue)
 
 # Add the test
 add_test(NAME SPMCTest COMMAND spmc_bench_test)
+add_test(NAME SPMCQueueUnitTest COMMAND spmc_queue_test)

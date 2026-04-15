@@ -8,5 +8,6 @@ SPMCQueue* create_queue(size_t capacity);
 void destroy_queue(SPMCQueue* queue);
 
 bool try_push(SPMCQueue* queue, void* value);
+size_t try_push_many(SPMCQueue* queue, void** values, size_t howmany);
 bool try_pop(SPMCQueue* queue, void** value);
 size_t try_pop_many(SPMCQueue* queue, void** values, size_t howmany);
