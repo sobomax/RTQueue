@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 #if defined(_WIN32)
 #include <malloc.h>
 #endif
@@ -173,8 +174,16 @@ try_pop_many(SPMCQueue* queue, void** values, size_t howmany)
         newReadIdx = readIdx + howmany;
         if (newReadIdx > writeIdxCache)
             newReadIdx = writeIdxCache;
-        for (uint64_t i = readIdx; i < newReadIdx; i++) {
-            values[i - readIdx] = queue->slots[i & queue->mask];
+        size_t count = (size_t)(newReadIdx - readIdx);
+        size_t start = (size_t)(readIdx & queue->mask);
+        size_t first_n = queue->capacity - start;
+
+        if (count <= first_n) {
+            memcpy(values, &queue->slots[start], count * sizeof(values[0]));
+        } else {
+            memcpy(values, &queue->slots[start], first_n * sizeof(values[0]));
+            memcpy(values + first_n, &queue->slots[0],
+              (count - first_n) * sizeof(values[0]));
         }
     } while (!UPDATE_R_IDX(queue, readIdx, newReadIdx));
     return (newReadIdx - readIdx);
