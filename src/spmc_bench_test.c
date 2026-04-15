@@ -36,7 +36,6 @@ void* worker_thread(void* arg) {
     SPMCQueue* queue = args->queue;
     _Alignas(CACHE_LINE_SIZE) void* values[WRKR_BATCH_SIZE] = {};
     uintptr_t last_value = 0;
-    struct timespec delay = {};
     int sleepcycles = 0;
 
     while (1) {
