@@ -81,6 +81,10 @@ SPMCQueue *
 create_queue(size_t capacity)
 {
     size_t alloc_size = sizeof(SPMCQueue) + sizeof(void*) * capacity;
+
+    assert(capacity > 0);
+    assert((capacity & (capacity - 1)) == 0);
+
     SPMCQueue* queue = (SPMCQueue*) spmc_aligned_alloc(CACHE_LINE_SIZE, alloc_size);
     if (queue == NULL) {
         return NULL;
