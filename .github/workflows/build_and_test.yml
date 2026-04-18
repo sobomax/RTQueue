@@ -104,6 +104,7 @@ jobs:
 
   benchmark_pgo_c:
     name: 'Benchmark: C API PGO'
+    needs: [build_test_c]
     runs-on: ubuntu-latest
 
     steps:
