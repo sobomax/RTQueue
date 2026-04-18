@@ -315,6 +315,17 @@ Attempt to push multiple values at once (batch operation).
   - `howmany`: Maximum number of items to push.
 - **Returns:** Number of items actually pushed (0 to `howmany`).
 
+#### `size_t try_push_many_pre(SPMCQueue* queue, void** values, size_t howmany, SPMCPrePushFunc pre_queue, void *cb_arg)`
+Attempt to push multiple values at once while running a callback for each item that is actually accepted.
+
+- **Parameters:**
+  - `queue`: The queue.
+  - `values`: Array of pointers to store in the queue.
+  - `howmany`: Maximum number of items to push.
+  - `pre_queue`: Optional callback invoked after capacity has been confirmed for an item and before that item is made visible to consumers.
+  - `cb_arg`: Opaque callback context pointer passed to `pre_queue`.
+- **Returns:** Number of items actually pushed (0 to `howmany`).
+
 #### `bool try_pop(SPMCQueue* queue, void** value)`
 Attempt to pop a value from the queue.
 

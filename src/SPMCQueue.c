@@ -180,6 +180,41 @@ try_push_many(SPMCQueue* queue, void** values, size_t howmany)
     return count;
 }
 
+size_t
+try_push_many_pre(SPMCQueue* queue, void** values, size_t howmany,
+  SPMCPrePushFunc pre_queue, void *cb_arg)
+{
+    uint64_t writeIdx = LOAD_W_IDX(queue, memory_order_relaxed);
+    uint64_t readIdx = queue->readIdxCache;
+    size_t available = (size_t)(queue->capacity - (writeIdx - readIdx));
+
+    if (available < howmany) {
+        readIdx = LOAD_R_IDX(queue, memory_order_acquire);
+        queue->readIdxCache = readIdx;
+        available = (size_t)(queue->capacity - (writeIdx - readIdx));
+    }
+
+    size_t count = howmany;
+    if (count > available) {
+        count = available;
+    }
+    if (count == 0) {
+        return 0;
+    }
+
+    size_t start = (size_t)(writeIdx & queue->mask);
+
+    for (size_t i = 0; i < count; i++) {
+        void *value = values[i];
+
+        pre_queue(cb_arg, value);
+        queue->slots[(start + i) & queue->mask] = value;
+    }
+
+    UPDATE_W_IDX(queue, writeIdx + count);
+    return count;
+}
+
 // Function to pop an element from the queue.
 // This can be called from multiple consumer threads.
 bool
