@@ -23,6 +23,7 @@ struct SPMCQueue;
 
 typedef struct SPMCQueue SPMCQueue;
 typedef void (*SPMCPrePushFunc)(void *cb_arg, void *value);
+typedef void *(*SPMCGetPushFunc)(void *cb_arg, void *key);
 
 SPMC_API SPMCQueue* create_queue(size_t capacity);
 SPMC_API void destroy_queue(SPMCQueue* queue);
@@ -31,5 +32,7 @@ SPMC_API bool try_push(SPMCQueue* queue, void* value);
 SPMC_API size_t try_push_many(SPMCQueue* queue, void** values, size_t howmany);
 SPMC_API size_t try_push_many_pre(SPMCQueue* queue, void** values, size_t howmany,
   SPMCPrePushFunc pre_queue, void *cb_arg);
+SPMC_API size_t try_push_many_kv(SPMCQueue* queue, void** keys, size_t howmany,
+  SPMCGetPushFunc get_value, void *cb_arg);
 SPMC_API bool try_pop(SPMCQueue* queue, void** value);
 SPMC_API size_t try_pop_many(SPMCQueue* queue, void** values, size_t howmany);

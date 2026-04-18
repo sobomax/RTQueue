@@ -27,6 +27,11 @@ struct pre_push_ctx {
     size_t count;
 };
 
+struct kv_push_ctx {
+    uintptr_t seen[16];
+    size_t count;
+};
+
 static void
 record_pre_push(void *cb_arg, void *value)
 {
@@ -34,6 +39,21 @@ record_pre_push(void *cb_arg, void *value)
 
     ctx = cb_arg;
     ctx->seen[ctx->count++] = (uintptr_t)value;
+}
+
+static void *
+get_even_value(void *cb_arg, void *key)
+{
+    struct kv_push_ctx *ctx;
+    uintptr_t value;
+
+    ctx = cb_arg;
+    value = (uintptr_t)key;
+    ctx->seen[ctx->count++] = value;
+    if ((value & 1) != 0) {
+        return NULL;
+    }
+    return (void *)(value + 100);
 }
 
 static void
@@ -124,6 +144,44 @@ test_try_push_many_pre_partial_when_full(void)
     destroy_queue(queue);
 }
 
+static void
+test_try_push_many_kv_filters_and_consumes_all(void)
+{
+    SPMCQueue* queue = create_queue(8);
+    void* keys[] = {
+        (void*)1, (void*)2, (void*)3, (void*)4,
+        (void*)5, (void*)6,
+    };
+    void* values[8] = {0};
+    struct kv_push_ctx ctx = {0};
+
+    assert(queue != NULL);
+    assert(try_push_many_kv(queue, keys, 6, get_even_value, &ctx) == 6);
+    assert(ctx.count == 6);
+    assert(try_pop_many(queue, values, 8) == 3);
+    assert((uintptr_t)values[0] == 102);
+    assert((uintptr_t)values[1] == 104);
+    assert((uintptr_t)values[2] == 106);
+    destroy_queue(queue);
+}
+
+static void
+test_try_push_many_kv_stops_at_capacity(void)
+{
+    SPMCQueue* queue = create_queue(4);
+    void* first[] = {(void*)1, (void*)2, (void*)3};
+    void* keys[] = {(void*)4, (void*)5, (void*)6};
+    struct kv_push_ctx ctx = {0};
+
+    assert(queue != NULL);
+    assert(try_push_many(queue, first, 3) == 3);
+    assert(try_push_many_kv(queue, keys, 3, get_even_value, &ctx) == 1);
+    assert(ctx.count == 1);
+    expect_pop_many(queue, 1, 3);
+    expect_pop_many(queue, 104, 1);
+    destroy_queue(queue);
+}
+
 int
 main(void)
 {
@@ -132,5 +190,7 @@ main(void)
     test_try_push_many_partial_when_full();
     test_try_push_many_pre_wrap();
     test_try_push_many_pre_partial_when_full();
+    test_try_push_many_kv_filters_and_consumes_all();
+    test_try_push_many_kv_stops_at_capacity();
     return 0;
 }

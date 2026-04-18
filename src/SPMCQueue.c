@@ -117,6 +117,20 @@ void destroy_queue(SPMCQueue* queue) {
     (atomic_store_explicit(&(q)->writeIdx,      (v), memory_order_release))
 #define UPDATE_W_CACHE(q, v) \
     (atomic_store_explicit(&(q)->writeIdxCache, (v), memory_order_relaxed))
+#define REFRESH_R_CACHE(q, v, mo) do { \
+    (v) = LOAD_R_IDX((q), (mo));       \
+    (q)->readIdxCache = (v);           \
+} while (0)
+#define REFRESH_W_CACHE(q, v, mo) do { \
+    (v) = LOAD_W_IDX((q), (mo));       \
+    UPDATE_W_CACHE((q), (v));          \
+} while (0)
+#define SLOT_IDX(q, idx) \
+    ((size_t)((idx) & (q)->mask))
+#define SLOT_AT(q, idx) \
+    ((q)->slots[SLOT_IDX((q), (idx))])
+#define SLOT_PTR(q, idx) \
+    (&SLOT_AT((q), (idx)))
 
 // Function to push an element into the queue.
 // This should be called from a single producer thread.
@@ -128,15 +142,15 @@ try_push(SPMCQueue* queue, void* value)
     // If the queue is not full
     uint64_t newsize = nextWriteIdx - queue->readIdxCache;
     if(newsize <= queue->capacity) {
-        queue->slots[writeIdx & queue->mask] = value;
+        SLOT_AT(queue, writeIdx) = value;
         UPDATE_W_IDX(queue, nextWriteIdx);
         return true;
     }
     // Update the cached index and retry
-    queue->readIdxCache = LOAD_R_IDX(queue, memory_order_acquire);
-    newsize = nextWriteIdx - queue->readIdxCache;
+    REFRESH_R_CACHE(queue, newsize, memory_order_acquire);
+    newsize = nextWriteIdx - newsize;
     if (newsize <= queue->capacity) {
-        queue->slots[writeIdx & queue->mask] = value;
+        SLOT_AT(queue, writeIdx) = value;
         UPDATE_W_IDX(queue, nextWriteIdx);
         return true;
     }
@@ -152,8 +166,7 @@ try_push_many(SPMCQueue* queue, void** values, size_t howmany)
     size_t available = (size_t)(queue->capacity - (writeIdx - readIdx));
 
     if (available < howmany) {
-        readIdx = LOAD_R_IDX(queue, memory_order_acquire);
-        queue->readIdxCache = readIdx;
+        REFRESH_R_CACHE(queue, readIdx, memory_order_acquire);
         available = (size_t)(queue->capacity - (writeIdx - readIdx));
     }
 
@@ -165,13 +178,13 @@ try_push_many(SPMCQueue* queue, void** values, size_t howmany)
         return 0;
     }
 
-    size_t start = (size_t)(writeIdx & queue->mask);
+    size_t start = SLOT_IDX(queue, writeIdx);
     size_t first_n = queue->capacity - start;
 
     if (count <= first_n) {
-        memcpy(&queue->slots[start], values, count * sizeof(values[0]));
+        memcpy(SLOT_PTR(queue, writeIdx), values, count * sizeof(values[0]));
     } else {
-        memcpy(&queue->slots[start], values, first_n * sizeof(values[0]));
+        memcpy(SLOT_PTR(queue, writeIdx), values, first_n * sizeof(values[0]));
         memcpy(&queue->slots[0], values + first_n,
           (count - first_n) * sizeof(values[0]));
     }
@@ -189,8 +202,7 @@ try_push_many_pre(SPMCQueue* queue, void** values, size_t howmany,
     size_t available = (size_t)(queue->capacity - (writeIdx - readIdx));
 
     if (available < howmany) {
-        readIdx = LOAD_R_IDX(queue, memory_order_acquire);
-        queue->readIdxCache = readIdx;
+        REFRESH_R_CACHE(queue, readIdx, memory_order_acquire);
         available = (size_t)(queue->capacity - (writeIdx - readIdx));
     }
 
@@ -202,17 +214,52 @@ try_push_many_pre(SPMCQueue* queue, void** values, size_t howmany,
         return 0;
     }
 
-    size_t start = (size_t)(writeIdx & queue->mask);
+    size_t start = SLOT_IDX(queue, writeIdx);
 
     for (size_t i = 0; i < count; i++) {
         void *value = values[i];
 
         pre_queue(cb_arg, value);
-        queue->slots[(start + i) & queue->mask] = value;
+        SLOT_AT(queue, start + i) = value;
     }
 
     UPDATE_W_IDX(queue, writeIdx + count);
     return count;
+}
+
+size_t
+try_push_many_kv(SPMCQueue* queue, void** keys, size_t howmany,
+  SPMCGetPushFunc get_value, void *cb_arg)
+{
+    uint64_t writeIdx = LOAD_W_IDX(queue, memory_order_relaxed);
+    uint64_t readIdx = queue->readIdxCache;
+    size_t available = (size_t)(queue->capacity - (writeIdx - readIdx));
+    size_t count, consumed, start;
+
+    if (available < howmany) {
+        REFRESH_R_CACHE(queue, readIdx, memory_order_acquire);
+        available = (size_t)(queue->capacity - (writeIdx - readIdx));
+    }
+    start = SLOT_IDX(queue, writeIdx);
+    consumed = 0;
+    count = 0;
+    while (consumed < howmany) {
+        void *value;
+
+        if (count == available) {
+            break;
+        }
+        value = get_value(cb_arg, keys[consumed]);
+        if (value != NULL) {
+            SLOT_AT(queue, start + count) = value;
+            count += 1;
+        }
+        consumed += 1;
+    }
+    if (count > 0) {
+        UPDATE_W_IDX(queue, writeIdx + count);
+    }
+    return consumed;
 }
 
 // Function to pop an element from the queue.
@@ -228,8 +275,7 @@ try_pop(SPMCQueue* queue, void** value)
         uint64_t writeIdxCache = LOAD_W_CACHE(queue);
         if (readIdx >= writeIdxCache) {
             // Update the cached index and retry
-            writeIdxCache = LOAD_W_IDX(queue, memory_order_acquire);
-            UPDATE_W_CACHE(queue, writeIdxCache);
+            REFRESH_W_CACHE(queue, writeIdxCache, memory_order_acquire);
             if(readIdx == writeIdxCache) {
                 // Queue was empty
                 return 0;
@@ -237,7 +283,7 @@ try_pop(SPMCQueue* queue, void** value)
             SPMC_ASSERT(readIdx < writeIdxCache);
         }
         newReadIdx = readIdx + 1;
-        rval  = queue->slots[readIdx & queue->mask];
+        rval  = SLOT_AT(queue, readIdx);
     } while (!UPDATE_R_IDX(queue, readIdx, newReadIdx));
     *value = rval;
     return true;
@@ -254,8 +300,7 @@ try_pop_many(SPMCQueue* queue, void** values, size_t howmany)
         uint64_t writeIdxCache = LOAD_W_CACHE(queue);
         if (readIdx >= writeIdxCache) {
             // Update the cached index and retry
-            writeIdxCache = LOAD_W_IDX(queue, memory_order_acquire);
-            UPDATE_W_CACHE(queue, writeIdxCache);
+            REFRESH_W_CACHE(queue, writeIdxCache, memory_order_acquire);
             if(readIdx == writeIdxCache) {
                 // Queue was empty
                 return 0;
@@ -266,13 +311,13 @@ try_pop_many(SPMCQueue* queue, void** values, size_t howmany)
         if (newReadIdx > writeIdxCache)
             newReadIdx = writeIdxCache;
         size_t count = (size_t)(newReadIdx - readIdx);
-        size_t start = (size_t)(readIdx & queue->mask);
+        size_t start = SLOT_IDX(queue, readIdx);
         size_t first_n = queue->capacity - start;
 
         if (count <= first_n) {
-            memcpy(values, &queue->slots[start], count * sizeof(values[0]));
+            memcpy(values, SLOT_PTR(queue, readIdx), count * sizeof(values[0]));
         } else {
-            memcpy(values, &queue->slots[start], first_n * sizeof(values[0]));
+            memcpy(values, SLOT_PTR(queue, readIdx), first_n * sizeof(values[0]));
             memcpy(values + first_n, &queue->slots[0],
               (count - first_n) * sizeof(values[0]));
         }
