@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14-dev']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15-dev']
         compiler: ['gcc', 'clang']
         os: [macos, ubuntu]
         include:
@@ -36,13 +36,14 @@ jobs:
           - python-version: '3.13'
             compiler: microsoft
             os: windows
-          - python-version: '3.14-dev'
+          - python-version: '3.14'
             compiler: microsoft
             os: windows
 
     runs-on: ${{ matrix.os }}-latest
     env:
       COMPILER: ${{ matrix.compiler }}
+      PIP_NO_CACHE_DIR: "1"
 
     steps:
     - uses: actions/checkout@v6
@@ -127,7 +128,7 @@ jobs:
     permissions:
       packages: write
     needs: [build_test_python, build_test_c]
-    uses: sippy/cimagic/.github/workflows/BuildPythonWheels.yml@v2
+    uses: sippy/cimagic/.github/workflows/BuildPythonWheels.yml@v3
     with:
       ghcr_repo: ${{ github.repository_owner }}/rtqueue
 
@@ -152,6 +153,9 @@ jobs:
         pattern: 'dist-*'
         merge-multiple: true
 
+    - name: Show context tree
+      run: ls -lR dist
+
     - name: Set up Python
       uses: actions/setup-python@v6
       with:
@@ -174,4 +178,4 @@ jobs:
     needs: publish_all_wheels
     permissions:
       contents: write
-    uses: sippy/cimagic/.github/workflows/RollReleaseDraft.yml@v2
+    uses: sippy/cimagic/.github/workflows/RollReleaseDraft.yml@v3
