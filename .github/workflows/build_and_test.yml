@@ -128,9 +128,10 @@ jobs:
     permissions:
       packages: write
     needs: [build_test_python, build_test_c]
-    uses: sippy/cimagic/.github/workflows/BuildPythonWheels.yml@v3
+    uses: sippy/cimagic/.github/workflows/BuildPythonWheels.yml@wip
     with:
       ghcr_repo: ${{ github.repository_owner }}/rtqueue
+      push_build_results: false
 
   publish_all_wheels:
     name: Publish Python Wheels
